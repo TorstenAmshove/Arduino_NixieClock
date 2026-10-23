@@ -3,16 +3,13 @@
  *
  */
 
-#define VERSION "20.03.1"
+#define VERSION "20.03.2"
 
-#include <TimeLib.h>      //https://github.com/PaulStoffregen/Time
+#include <time.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
-#include <WiFiUdp.h>
-#include <Timezone.h> // https://github.com/JChristensen/Timezone
 
-WiFiUDP Udp;
 ESP8266WebServer server(80);
 String scanned_wifis;
 String html;
@@ -30,43 +27,53 @@ byte eeprom_configWritten; // 42 = yes
 // Settings //
 //////////////
 
-// Timezone
-TimeChangeRule myDST = {"MESZ", Last, Sun, Mar, 2, 60}; // Daylight time
-TimeChangeRule mySTD = {"MEZ",  Last, Sun, Oct, 2,  0}; // Standard time
+// Hardware-Version waehlen:
+#define HW_POC    1  // handverdrahtetes Erstlingsmodell (alt)
+#define HW_BOARD  2  // designte Platine (neu)
+#define HW_VERSION HW_POC
+
+#if HW_VERSION == HW_POC
+  #define HW_NAME "poc"
+#else
+  #define HW_NAME "board"
+#endif
 
 // Pin-Settings
-//const uint8_t pins_character[] = {16,14,12,13};  // Needed for POC-Clock with other Pin-Layout
-const uint8_t pins_character[] = {13,12,14,16};  // A, B, C, D
+#if HW_VERSION == HW_POC
+  const uint8_t pins_character[] = {16,14,12,13};  // A, B, C, D
+#else
+  const uint8_t pins_character[] = {13,12,14,16};  // A, B, C, D
+#endif
 const uint8_t pins_tubes[]     = {3,5,4,0,2,15};
 
 // Number 0-9 to binary value for SN74141 decoder
-/* 
-// Needed for POC-Clock with other Pin-Layout
-const uint8_t char_to_bin[10][4] = {
-  {0,0,0,0},
-  {1,0,0,0},
-  {0,1,0,0},
-  {1,1,0,0},
-  {0,0,1,0},
-  {1,0,1,0},
-  {0,1,1,0},
-  {1,1,1,0},
-  {0,0,0,1},
-  {1,0,0,1}
-};
-*/
-const uint8_t char_to_bin[10][4] = {
-  {0,0,0,0}, // 0
-  {1,0,0,1}, // 1
-  {0,0,0,1}, // 2
-  {1,1,1,0}, // 3
-  {0,1,1,0}, // 4
-  {1,0,1,0}, // 5
-  {0,0,1,0}, // 6
-  {1,1,0,0}, // 7
-  {0,1,0,0}, // 8
-  {1,0,0,0}  // 9
-};
+#if HW_VERSION == HW_POC
+  const uint8_t char_to_bin[10][4] = {
+    {0,0,0,0}, // 0
+    {1,0,0,0}, // 1
+    {0,1,0,0}, // 2
+    {1,1,0,0}, // 3
+    {0,0,1,0}, // 4
+    {1,0,1,0}, // 5
+    {0,1,1,0}, // 6
+    {1,1,1,0}, // 7
+    {0,0,0,1}, // 8
+    {1,0,0,1}  // 9
+  };
+#else
+  const uint8_t char_to_bin[10][4] = {
+    {0,0,0,0}, // 0
+    {1,0,0,1}, // 1
+    {0,0,0,1}, // 2
+    {1,1,1,0}, // 3
+    {0,1,1,0}, // 4
+    {1,0,1,0}, // 5
+    {0,0,1,0}, // 6
+    {1,1,0,0}, // 7
+    {0,1,0,0}, // 8
+    {1,0,0,0}  // 9
+  };
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -75,6 +82,12 @@ const uint8_t char_to_bin[10][4] = {
 // Setup //
 ///////////
 void setup() {
+  Serial.begin(115200);
+  Serial.println();
+  Serial.print("Nixie v");
+  Serial.print(VERSION "-" HW_NAME);
+  Serial.println();
+
   // Set Pin Modes
   for(uint8_t i=0; i<4; i++){
     pinMode(pins_character[i], OUTPUT);
@@ -145,7 +158,10 @@ void setup() {
   if(eeprom_ssid.length() > 1){
     WiFi.disconnect();
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(eeprom_ssid.c_str(), eeprom_pass.c_str());
+    Serial.print("Verbinde mit WLAN: ");
+    Serial.println(eeprom_ssid);
 
     for(int i = 0; i < 20; i++){
       if(WiFi.status() == WL_CONNECTED){
@@ -158,11 +174,12 @@ void setup() {
   }
 
   if(wifi_connected){
-    Udp.begin(8888);
-
-    setSyncProvider(getNtpTime);
-    setSyncInterval(eeprom_syncInterval*60);
+    Serial.println("WLAN verbunden");
+    Serial.print("NTP Server: ");
+    Serial.println(eeprom_ntpServer);
+    configTime(eeprom_offset * 3600, eeprom_summertime ? 3600 : 0, eeprom_ntpServer.c_str());
   }else{
+    Serial.println("WLAN nicht verbunden - starte Access Point");
     setupAP();
   }
 
@@ -176,12 +193,14 @@ uint8_t display_value[6] = {0,0,0,0,0,0};
 
 void loop() {
   if(wifi_connected){
-    display_value[5] = hour()/10;
-    display_value[4] = hour()%10;
-    display_value[3] = minute()/10;
-    display_value[2] = minute()%10;
-    display_value[1] = second()/10;
-    display_value[0] = second()%10;
+    time_t now = time(nullptr);
+    struct tm *lt = localtime(&now);
+    display_value[5] = lt->tm_hour/10;
+    display_value[4] = lt->tm_hour%10;
+    display_value[3] = lt->tm_min/10;
+    display_value[2] = lt->tm_min%10;
+    display_value[1] = lt->tm_sec/10;
+    display_value[0] = lt->tm_sec%10;
   }else{
     display_value[5] = 0;
     display_value[4] = 0;
@@ -241,10 +260,9 @@ void setupAP(void){
 
 void startWebServer(){
   server.on("/", []() {
-    IPAddress ip = WiFi.softAPIP();
     html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Nixie</title></head><body>";
     html += "<h3>Nixie v";
-    html += VERSION;
+    html += VERSION "-" HW_NAME;
     html += "</h3>";
     html += "<p>";
     html += scanned_wifis;
@@ -395,66 +413,4 @@ void startWebServer(){
   });
 
   server.begin();
-}
-
-//////////////
-// NTP Code //
-//////////////
-const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
-byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
-
-Timezone myTZ(myDST, mySTD);
-TimeChangeRule *tcr; //pointer to the time change rule
-
-time_t getNtpTime()
-{
-  IPAddress ntpServerIP; // NTP server's ip address
-  
-  char ntpServerName[eeprom_ntpServer.length()];
-  eeprom_ntpServer.toCharArray(ntpServerName,eeprom_ntpServer.length()+1);
-
-  while (Udp.parsePacket() > 0) ; // discard any previously received packets
-
-  WiFi.hostByName(ntpServerName, ntpServerIP);
-  sendNTPpacket(ntpServerIP);
-  uint32_t beginWait = millis();
-  
-  while (millis() - beginWait < 1500) {
-    int size = Udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      if(eeprom_summertime == 1) return myTZ.toLocal(secsSince1900 - 2208988800UL + eeprom_offset * SECS_PER_HOUR, &tcr);
-      else return secsSince1900 - 2208988800UL + eeprom_offset * SECS_PER_HOUR;
-    }
-  }
-  return 0; // return 0 if unable to get the time
-}
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress &address)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12] = 49;
-  packetBuffer[13] = 0x4E;
-  packetBuffer[14] = 49;
-  packetBuffer[15] = 52;
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  Udp.beginPacket(address, 123); //NTP requests are to port 123
-  Udp.write(packetBuffer, NTP_PACKET_SIZE);
-  Udp.endPacket();
 }
