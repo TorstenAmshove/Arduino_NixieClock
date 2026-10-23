@@ -1,0 +1,7 @@
+{
+  "files.watcherExclude": {
+    "**/.pio/**": true,
+    "**/.pioenvs/**": true,
+    "**/build/**": true
+  }
+}
