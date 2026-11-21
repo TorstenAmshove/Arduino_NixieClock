@@ -3,7 +3,7 @@
  *
  */
 
-#define VERSION "20.03.2"
+#define VERSION "26.11.1"
 
 #include <time.h>
 #include <ESP8266WiFi.h>
@@ -177,13 +177,32 @@ void setup() {
     Serial.println("WLAN verbunden");
     Serial.print("NTP Server: ");
     Serial.println(eeprom_ntpServer);
-    configTime(eeprom_offset * 3600, eeprom_summertime ? 3600 : 0, eeprom_ntpServer.c_str());
+    String tz = buildTZ(eeprom_offset, eeprom_summertime);
+    Serial.print("Zeitzone (POSIX TZ): ");
+    Serial.println(tz);
+    configTime(tz.c_str(), eeprom_ntpServer.c_str());
   }else{
     Serial.println("WLAN nicht verbunden - starte Access Point");
     setupAP();
   }
 
   startWebServer();
+}
+
+// Baut einen POSIX-TZ-String aus dem GMT-Offset (h) und dem Sommerzeit-Flag.
+// Mit Sommerzeit gilt die EU-Regel: Umstellung am letzten Sonntag im Maerz bzw.
+// Oktober, jeweils um 01:00 UTC. newlib rechnet damit bei localtime() selbst um.
+// Beispiel Offset 1: "STD-1DST,M3.5.0/2,M10.5.0/3" (= MEZ/MESZ)
+String buildTZ(int offset, bool summertime){
+  String tz = "STD-";            // POSIX: Vorzeichen invertiert (oestlich = negativ)
+  tz += offset;
+  if(summertime){
+    tz += "DST,M3.5.0/";
+    tz += 1 + offset;            // Beginn: 01:00 UTC in lokaler Normalzeit
+    tz += ",M10.5.0/";
+    tz += 2 + offset;            // Ende: 01:00 UTC in lokaler Sommerzeit
+  }
+  return tz;
 }
 
 //////////
